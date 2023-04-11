@@ -8,6 +8,7 @@ import asyncio
 
 TOKEN = os.getenv('DISCORD_TOKEN')
 YT_PATTERN = re.compile(r'(https?://)?(www\.)?(youtube\.com/watch\?v=|youtu\.be/)[\w\-]{11}')
+FFMPEG_OPTIONS = {'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5', 'options': '-vn'}
 YDL_OPTS = {
 	'format': 'm4a/bestaudio/best',
 	'outtmpl': f'%(title)s.%(ext)s',
@@ -28,7 +29,8 @@ class Song:
 	name: str
 	url: str
 
-
+# Doesn't make sense for the view to have all this logic
+# Should just have call backs that respond to interactions
 class MusicView(discord.ui.View):
 	control_msg: discord.Message
 	voice_client: discord.VoiceClient
@@ -45,13 +47,16 @@ class MusicView(discord.ui.View):
 		self.is_looping = False
 
 
-	def add_song(self, song: Song):
+	async def add_song(self, song: Song):
 		self.song_queue.append(song)
+
+		if self.current_song != None:
+			await self.control_msg.edit(content=f"**Now Playing:** {self.current_song.name}\n**Queue Size: ** {len(self.song_queue)}")
 	
 
 	async def play_next(self):
 		if len(self.song_queue) > 0:
-			self.current_song = self.song_queue.pop()
+			self.current_song = self.song_queue.pop(0)
 			await self.play_current_song()
 		else:
 			self.current_song = None
@@ -71,11 +76,24 @@ class MusicView(discord.ui.View):
 	async def play_after(self, error):
 		if error:
 			print("Error playing next song!")
-
+		print("Test_IsPlaying: ", self.voice_client.is_playing())
+		print("Test_IsPaused: ", self.voice_client.is_paused())
 		if self.is_looping:
 			await self.play_current_song()
 		else:
 			await self.play_next()
+
+	async def play_source(self, source):
+			self.voice_client.stop()
+			try:
+				self.voice_client.play(
+					source,
+					after=lambda e: asyncio.run_coroutine_threadsafe(self.play_after(e), self.voice_client.loop)
+					)
+			except (discord.errors.ClientException, discord.errors.OpusNotLoaded) as e:
+				print(f"Error playing audio: {e}")
+				await asyncio.sleep(1)
+				await self.play_source(source)
 
 
 	async def play_current_song(self):
@@ -83,12 +101,10 @@ class MusicView(discord.ui.View):
 			print(f"**Now Playing:** {self.current_song.name}")
 			await self.control_msg.clear_reaction("⏸")
 			await self.control_msg.add_reaction("▶")
-			await self.control_msg.edit(content=f"**Now Playing:** {self.current_song.name}")
+			await self.control_msg.edit(content=f"**Now Playing:** {self.current_song.name}\n **Queue Size: ** {len(self.song_queue)}")
 			self.voice_client.stop()
-			self.voice_client.play(
-				discord.FFmpegPCMAudio(self.current_song.url),
-				after=lambda e: asyncio.run_coroutine_threadsafe(self.play_after(e), self.voice_client.loop)
-				)
+			source = await discord.FFmpegOpusAudio.from_probe(self.current_song.url, **FFMPEG_OPTIONS)
+			await self.play_source(source=source)
 	
 
 	async def stop(self):
@@ -123,7 +139,8 @@ class MusicView(discord.ui.View):
 
 	@discord.ui.button(emoji="⏩", style=discord.ButtonStyle.grey)
 	async def skip_button(self, button: discord.ui.Button, interaction: discord.Interaction):
-		await self.play_next()
+		# Will trigger the after callback causing the next song to play
+		self.voice_client.stop()
 		await interaction.response.defer()
 
 
@@ -209,11 +226,13 @@ class Client(discord.Client):
 			self.current_music_view.control_msg = await text_channel.send(
 				view=self.current_music_view, 
 				content=f"Now Playing...")
-			self.current_music_view.add_song(song)
+			await self.current_music_view.add_song(song)
 			await self.current_music_view.play_next()
 
 		else:
-			self.current_music_view.add_song(song)
+			await self.current_music_view.add_song(song)
+			if not self.current_music_view.voice_client.is_playing():
+				await self.current_music_view.play_next()
 			#await channel.send(content=f"{attachment.filename} added to queue!")
 	
 
