@@ -1,0 +1,1 @@
+Simple discord music bot created for friend's DND campaign. Feel free to clone it, however, it was created for private use so don't expect any support.
