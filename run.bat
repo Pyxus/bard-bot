@@ -20,5 +20,7 @@ if %errorlevel% neq 0 (
 
     :end
     echo Setup complete!
-    pause
+    cls
+    echo Grabbing my lute...
+    start "bard-bot" python %~dp0/src/bot.py ; echo "Test"
 )

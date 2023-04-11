@@ -46,54 +46,52 @@ class MusicView(discord.ui.View):
 		self.current_song = None
 		self.is_looping = False
 
+	
+	def get_status(self) -> str:
+		status = ""
+
+		if self.current_song != None:
+			status += f"**Now Playing:** {self.current_song.name}\n"
+
+			if len(self.song_queue) > 0:
+				status += f"**Up Next:** {self.song_queue[0].name}\n"
+				status += f"**Queue Size**: {len(self.song_queue)}"
+		else:
+			status = "**Queue Empty...**"
+		
+		return status
+
 
 	async def add_song(self, song: Song):
 		self.song_queue.append(song)
 
 		if self.current_song != None:
-			await self.control_msg.edit(content=f"**Now Playing:** {self.current_song.name}\n**Queue Size: ** {len(self.song_queue)}")
+			await self.control_msg.edit(content=self.get_status())
 	
 
-	async def play_next(self):
-		if len(self.song_queue) > 0:
-			self.current_song = self.song_queue.pop(0)
-			await self.play_current_song()
-		else:
-			self.current_song = None
+	async def play_source(self, source: discord.AudioSource):
+		self.voice_client.stop()
+		try:
+			self.voice_client.play(
+				discord.PCMVolumeTransformer(source, .1),
+				after=lambda e: asyncio.run_coroutine_threadsafe(self.play_after(e), self.voice_client.loop)
+				)
+		except (discord.errors.ClientException, discord.errors.OpusNotLoaded) as e:
+			print(f"Error playing audio: {e}")
+			await asyncio.sleep(1)
+			await self.play_source(source)
 
-
-	def can_play_next(self):
-		return not self.is_looping and not self.voice_client.is_playing()
-
-	
-	def can_loop(self):
-		return (
-			self.is_looping 
-			and not self.voice_client.is_playing()
-			and not self.voice_client.is_paused()
-			)
 
 	async def play_after(self, error):
 		if error:
 			print("Error playing next song!")
-		print("Test_IsPlaying: ", self.voice_client.is_playing())
-		print("Test_IsPaused: ", self.voice_client.is_paused())
+
 		if self.is_looping:
+			print("Looping current song.")
 			await self.play_current_song()
 		else:
-			await self.play_next()
-
-	async def play_source(self, source):
-			self.voice_client.stop()
-			try:
-				self.voice_client.play(
-					source,
-					after=lambda e: asyncio.run_coroutine_threadsafe(self.play_after(e), self.voice_client.loop)
-					)
-			except (discord.errors.ClientException, discord.errors.OpusNotLoaded) as e:
-				print(f"Error playing audio: {e}")
-				await asyncio.sleep(1)
-				await self.play_source(source)
+			print("Playing next song.")
+			await self.play_next_song()
 
 
 	async def play_current_song(self):
@@ -101,12 +99,24 @@ class MusicView(discord.ui.View):
 			print(f"**Now Playing:** {self.current_song.name}")
 			await self.control_msg.clear_reaction("⏸")
 			await self.control_msg.add_reaction("▶")
-			await self.control_msg.edit(content=f"**Now Playing:** {self.current_song.name}\n **Queue Size: ** {len(self.song_queue)}")
+			await self.control_msg.edit(
+				content=self.get_status()
+				)
 			self.voice_client.stop()
-			source = await discord.FFmpegOpusAudio.from_probe(self.current_song.url, **FFMPEG_OPTIONS)
+			source = discord.FFmpegPCMAudio(
+				source = self.current_song.url, 
+				options='-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -vn')
 			await self.play_source(source=source)
 	
 
+	async def play_next_song(self):
+		if len(self.song_queue) > 0:
+			self.current_song = self.song_queue.pop(0)
+			await self.play_current_song()
+		else:
+			self.current_song = None
+
+	
 	async def stop(self):
 		self.voice_client.stop()
 		self.song_queue = []
@@ -117,6 +127,7 @@ class MusicView(discord.ui.View):
 
 	@discord.ui.button(emoji="⏯️", style=discord.ButtonStyle.grey)
 	async def play_pause_button(self,  button: discord.ui.Button, interaction: discord.Interaction):
+		print(f"{interaction.user.name} clicked play/pause.")
 		if self.voice_client.is_paused():
 			await self.control_msg.clear_reaction("⏸")
 			await self.control_msg.add_reaction("▶")
@@ -127,31 +138,38 @@ class MusicView(discord.ui.View):
 			await self.control_msg.add_reaction("⏸")
 			print("Song paused.")
 			self.voice_client.pause()
-		
 		await interaction.response.defer()
 	
 
 	@discord.ui.button(emoji="⏹", style=discord.ButtonStyle.grey)
 	async def stop_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+		print(f"{interaction.user.name} clicked stop.")
 		await self.stop()
+		print(f'Song stopped.')
 		await interaction.response.defer()
 
 
 	@discord.ui.button(emoji="⏩", style=discord.ButtonStyle.grey)
 	async def skip_button(self, button: discord.ui.Button, interaction: discord.Interaction):
 		# Will trigger the after callback causing the next song to play
+		print(f"{interaction.user.name} clicked skip.")
+		self.is_looping = False
 		self.voice_client.stop()
+		print(f"Song skipped.")
 		await interaction.response.defer()
 
 
 	@discord.ui.button(emoji="🔁", style=discord.ButtonStyle.grey)
 	async def repeat_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+		print(f"{interaction.user.name} clicked repeat.")
 		self.is_looping = not self.is_looping
 
 		if self.is_looping:
 			await self.control_msg.add_reaction("🔁")
+			print(f"Song now set to repeat.")
 		else:
 			await self.control_msg.clear_reaction("🔁")
+			print(f"Song no longer set to repeat.")
 
 		await interaction.response.defer()
 
@@ -206,7 +224,10 @@ class Client(discord.Client):
 				)
 		
 		if len(songs) > 0:
-			await message.delete()
+			try:
+				await message.delete()
+			except:
+				pass
 
 	async def save_attachment(self, attachment, fp: str):
 		os.makedirs(os.path.dirname(fp), exist_ok=True)
@@ -227,12 +248,12 @@ class Client(discord.Client):
 				view=self.current_music_view, 
 				content=f"Now Playing...")
 			await self.current_music_view.add_song(song)
-			await self.current_music_view.play_next()
+			await self.current_music_view.play_next_song()
 
 		else:
 			await self.current_music_view.add_song(song)
 			if not self.current_music_view.voice_client.is_playing():
-				await self.current_music_view.play_next()
+				await self.current_music_view.play_next_song()
 			#await channel.send(content=f"{attachment.filename} added to queue!")
 	
 
